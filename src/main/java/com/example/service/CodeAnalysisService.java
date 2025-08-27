@@ -133,7 +133,8 @@ public class CodeAnalysisService {
         );
 
         String comprehensiveReview = reviewModel.generate(reviewPrompt);
-
+        LOG.info("Initial response: "+initialAnalysis);
+        LOG.info("Comprehensive response: "+comprehensiveReview);
         // Extract JSON from the response
         String jsonResponse = extractJsonFromResponse(comprehensiveReview);
 
