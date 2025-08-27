@@ -42,7 +42,8 @@ public class CodeAnalysisService {
     List<String> supportedLanguages;
 
     //private static final Pattern UC_ID_PATTERN = Pattern.compile("UC-(\\w+)");
-    private static final Pattern UC_ID_PATTERN = Pattern.compile("UC-([^:]+):");
+    //private static final Pattern UC_ID_PATTERN = Pattern.compile("UC-([^:]+):");
+    private static final Pattern UC_ID_PATTERN = Pattern.compile("UC-([A-Za-z0-9_-]+):?");
     private static final Pattern JSON_PATTERN = Pattern.compile("\\{.*\\}", Pattern.DOTALL);
 
     public String extractRequirementId(CodeImplementation implementation) {

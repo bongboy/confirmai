@@ -1,6 +1,7 @@
 package com.example.service;
 
 import com.example.dto.Requirement;
+import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -13,7 +14,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @ApplicationScoped
@@ -24,6 +27,9 @@ public class EmbeddingService {
 
     @Inject
     RedisClient redisClient;
+
+    @Inject
+    TextChunkingService textChunkingService;
 
     @ConfigProperty(name = "redis.vector.index")
     String indexName;
@@ -56,25 +62,46 @@ public class EmbeddingService {
 
     public String storeRequirement(Requirement requirement) {
         try {
-            String text = "ID: " + requirement.getId() + " CONTENT: " + requirement.getContent() + " METADATA: " + requirement.getMetadata();
-            Embedding embedding = embeddingModel.embed(text).content();
-            TextSegment segment = TextSegment.from(text);
-
+            // Ensure ID exists
             String id = requirement.getId() != null ? requirement.getId() : UUID.randomUUID().toString();
 
-            // Use the new add method signature
-            embeddingStore.add(embedding, segment);
+            // Split into chunks
+            List<TextSegment> chunks = textChunkingService.chunkText(requirement.getContent());
 
-            // Store in regular Redis using hset with proper arguments
-            redisClient.hset(List.of("requirements:" + id, "id", id));
-            redisClient.hset(List.of("requirements:" + id, "content", requirement.getContent()));
-            redisClient.hset(List.of("requirements:" + id, "metadata", requirement.getMetadata()));
+            for (int i = 0; i < chunks.size(); i++) {
+
+                // build metadata
+                Map<String, String> metadataMap = new HashMap<>();
+                metadataMap.put("requirementId", id);
+                metadataMap.put("chunkIndex", String.valueOf(i));
+                metadataMap.put("metadata", requirement.getMetadata());
+
+                Metadata metadata = Metadata.from(metadataMap);
+
+                TextSegment segment = TextSegment.from(
+                        chunks.get(i).text(), metadata
+                );
+
+                // Embed each chunk
+                Embedding embedding = embeddingModel.embed(segment.text()).content();
+
+                // Store in Redis vector index (embedding + metadata travels together)
+                embeddingStore.add(embedding, segment);
+
+                // (Optional) also store in regular Redis for quick lookup
+                String chunkKey = "requirements:" + id + ":chunk:" + i;
+                redisClient.hset(List.of(chunkKey, "id", id));
+                redisClient.hset(List.of(chunkKey, "chunkIndex", String.valueOf(i)));
+                redisClient.hset(List.of(chunkKey, "content", segment.text()));
+                redisClient.hset(List.of(chunkKey, "metadata", requirement.getMetadata()));
+            }
 
             return id;
         } catch (Exception e) {
             throw new RuntimeException("Failed to store requirement: " + e.getMessage(), e);
         }
     }
+
 
     public List<EmbeddingMatch<TextSegment>> findSimilarRequirements(String text, int maxResults) {
         try {
@@ -87,33 +114,29 @@ public class EmbeddingService {
 
     public Requirement findRequirementById(String id) {
         try {
-            Response idResponse = redisClient.hget("requirements:" + id, "id");
-            Response contentResponse = redisClient.hget("requirements:" + id, "content");
-            Response metadataResponse = redisClient.hget("requirements:" + id, "metadata");
+            // Only fetch chunk 0 for high-level requirement text
+            Response idResponse = redisClient.hget("requirements:" + id + ":0", "id");
+            Response contentResponse = redisClient.hget("requirements:" + id + ":0", "content");
+            Response metadataResponse = redisClient.hget("requirements:" + id + ":0", "metadata");
 
             if (idResponse == null || contentResponse == null || metadataResponse == null) {
                 return null;
             }
 
-            // Convert Response objects to strings
-            String idStr = idResponse.toString();
-            String contentStr = contentResponse.toString();
-            String metadataStr = metadataResponse.toString();
-
-            // Remove quotes if present
-            if (idStr.startsWith("\"") && idStr.endsWith("\"")) {
-                idStr = idStr.substring(1, idStr.length() - 1);
-            }
-            if (contentStr.startsWith("\"") && contentStr.endsWith("\"")) {
-                contentStr = contentStr.substring(1, contentStr.length() - 1);
-            }
-            if (metadataStr.startsWith("\"") && metadataStr.endsWith("\"")) {
-                metadataStr = metadataStr.substring(1, metadataStr.length() - 1);
-            }
-
-            return new Requirement(idStr, contentStr, metadataStr);
+            return new Requirement(
+                    stripQuotes(idResponse.toString()),
+                    stripQuotes(contentResponse.toString()),
+                    stripQuotes(metadataResponse.toString())
+            );
         } catch (Exception e) {
             throw new RuntimeException("Failed to find requirement by ID: " + e.getMessage(), e);
         }
+    }
+
+    private String stripQuotes(String s) {
+        if (s.startsWith("\"") && s.endsWith("\"")) {
+            return s.substring(1, s.length() - 1);
+        }
+        return s;
     }
 }
